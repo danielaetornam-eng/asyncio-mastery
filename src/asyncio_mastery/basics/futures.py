@@ -12,10 +12,11 @@ import os
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Iterable
 from concurrent.futures import Executor, ProcessPoolExecutor, ThreadPoolExecutor
 from contextlib import contextmanager, suppress
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, cast
 
 T = TypeVar("T")
 R = TypeVar("R")
+S = TypeVar("S")
 
 
 class Future(Generic[T]):
@@ -23,21 +24,21 @@ class Future(Generic[T]):
 
     def __init__(self, *, loop: asyncio.AbstractEventLoop | None = None) -> None:
         self._loop = loop or asyncio.get_running_loop()
-        self._future = self._loop.create_future()
-        self._callbacks: list[Callable[[asyncio.Future], None]] = []
+        self._future: asyncio.Future[T] = self._loop.create_future()
+        self._callbacks: list[Callable[[asyncio.Future[Any]], None]] = []
 
     @property
     def loop(self) -> asyncio.AbstractEventLoop:
         return self._loop
 
-    def __await__(self):
+    def __await__(self) -> Any:
         return self._future.__await__()
 
-    def add_done_callback(self, callback: Callable[[asyncio.Future], None]) -> None:
+    def add_done_callback(self, callback: Callable[[asyncio.Future[Any]], None]) -> None:
         self._callbacks.append(callback)
         self._future.add_done_callback(callback)
 
-    def remove_done_callback(self, callback: Callable[[asyncio.Future], None]) -> int:
+    def remove_done_callback(self, callback: Callable[[asyncio.Future[Any]], None]) -> int:
         try:
             self._callbacks.remove(callback)
             return self._future.remove_done_callback(callback)
@@ -329,36 +330,36 @@ class FutureChain(Generic[T]):
     def __init__(self, future: asyncio.Future[T]) -> None:
         self._future = future
 
-    def then(self, func: Callable[[T], R | Awaitable[R]]) -> "FutureChain[R]":
+    def then(self, func: Callable[[T], Any]) -> "FutureChain[S]":
         """Add a transformation to the chain."""
 
-        async def transform():
+        async def transform() -> S:
             result = await self._future
             if inspect.iscoroutinefunction(func):
-                return await func(result)
-            return func(result)
+                return cast(S, await func(result))
+            return cast(S, func(result))
 
         return FutureChain(asyncio.ensure_future(transform()))
 
-    def catch(self, handler: Callable[[BaseException], R | Awaitable[R]]) -> "FutureChain[R]":
+    def catch(self, handler: Callable[[BaseException], Any]) -> "FutureChain[S]":
         """Add error handler to the chain."""
 
-        async def handle():
+        async def handle() -> S:
             try:
-                return await self._future
+                return cast(S, await self._future)
             except asyncio.CancelledError:
                 raise
             except BaseException as e:
                 if inspect.iscoroutinefunction(handler):
-                    return await handler(e)
-                return handler(e)
+                    return cast(S, await handler(e))
+                return cast(S, handler(e))
 
         return FutureChain(asyncio.ensure_future(handle()))
 
     def finally_(self, callback: Callable[[], Awaitable[None] | None]) -> "FutureChain[T]":
         """Add finally callback."""
 
-        async def with_finally():
+        async def with_finally() -> T:
             try:
                 return await self._future
             finally:
@@ -379,10 +380,10 @@ def chain_future(future: asyncio.Future[T]) -> FutureChain[T]:
 
 
 @contextmanager
-def future_context():
+def future_context() -> Any:
     """Context manager for future operations."""
     _loop = asyncio.get_running_loop()
-    futures = []
+    futures: list[asyncio.Future[Any]] = []
     try:
         yield futures
     finally:
@@ -391,14 +392,14 @@ def future_context():
                 f.cancel()
 
 
-class BatchedFuture(Generic[T]):
+class BatchedFuture(Generic[T, R]):
     """Batch multiple futures for efficient execution."""
 
     def __init__(self, max_batch_size: int = 100, max_wait: float = 0.01) -> None:
         self._max_batch_size = max_batch_size
         self._max_wait = max_wait
-        self._queue: asyncio.Queue = asyncio.Queue()
-        self._processor_task: asyncio.Task | None = None
+        self._queue: asyncio.Queue[tuple[T, asyncio.Future[R]]] = asyncio.Queue()
+        self._processor_task: asyncio.Task[Any] | None = None
         self._running = False
 
     async def start(self, processor: Callable[[list[T]], Coroutine[Any, Any, list[R]]]) -> None:
@@ -423,7 +424,7 @@ class BatchedFuture(Generic[T]):
         self, processor: Callable[[list[T]], Coroutine[Any, Any, list[R]]]
     ) -> None:
         while self._running:
-            batch: list[tuple[T, asyncio.Future]] = []
+            batch: list[tuple[T, asyncio.Future[R]]] = []
             try:
                 item = await asyncio.wait_for(self._queue.get(), timeout=self._max_wait)
             except TimeoutError:
@@ -456,7 +457,7 @@ class BatchedFuture(Generic[T]):
 
     async def submit(self, item: T) -> R:
         """Submit an item for batch processing."""
-        future = asyncio.get_running_loop().create_future()
+        future: asyncio.Future[R] = asyncio.get_running_loop().create_future()
         await self._queue.put((item, future))
         return await future
 
@@ -505,7 +506,7 @@ class FutureWrapper:
         """Return the future's exception, if any."""
         return self._future.exception()
 
-    def __await__(self):
+    def __await__(self) -> Any:
         return self._future.__await__()
 
 
@@ -564,7 +565,7 @@ async def future_chaining() -> None:
         await asyncio.sleep(0.01)
         return value * 2
 
-    chained = FutureChain(base).then(double).then(lambda value: value + 1)
+    chained: FutureChain[int] = FutureChain(base).then(double).then(lambda value: value + 1)
     result = await chained.result()
     print(f"Chained result: {result}")
 

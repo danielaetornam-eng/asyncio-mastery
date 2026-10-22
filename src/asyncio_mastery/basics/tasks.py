@@ -6,7 +6,7 @@ Advanced task creation, management, and coordination utilities.
 
 import asyncio
 import contextvars
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from enum import Enum
@@ -29,9 +29,9 @@ class TaskStatus(Enum):
 class TaskInfo:
     """Information about a task."""
 
-    task: asyncio.Task
     name: str
     created_at: float
+    task: asyncio.Task[Any] | None = None
     status: TaskStatus = TaskStatus.PENDING
     result: Any = None
     exception: BaseException | None = None
@@ -50,11 +50,11 @@ class Task(Generic[T]):
         context: contextvars.Context | None = None,
     ) -> None:
         self._coro = coro
-        self._name = name or getattr(coro, "__qualname__", "Task")
+        self._name = name or str(getattr(coro, "__qualname__", "Task"))
         self._loop = loop or asyncio.get_running_loop()
         self._context = context or contextvars.copy_context()
-        self._task: asyncio.Task | None = None
-        self._callbacks: list[Callable[[asyncio.Task], None]] = []
+        self._task: asyncio.Task[T] | None = None
+        self._callbacks: list[Callable[[asyncio.Task[Any]], None]] = []
         self._info = TaskInfo(
             task=None,  # Will be set after creation
             name=self._name,
@@ -62,7 +62,7 @@ class Task(Generic[T]):
             status=TaskStatus.PENDING,
         )
 
-    def __await__(self):
+    def __await__(self) -> Any:
         return self.create().__await__()
 
     @property
@@ -74,7 +74,7 @@ class Task(Generic[T]):
         return self._loop
 
     @property
-    def task(self) -> asyncio.Task | None:
+    def task(self) -> asyncio.Task[T] | None:
         return self._task
 
     @property
@@ -108,13 +108,13 @@ class Task(Generic[T]):
             self._info.exception = e
             raise
 
-    def add_done_callback(self, callback: Callable[[asyncio.Task], None]) -> None:
+    def add_done_callback(self, callback: Callable[[asyncio.Task[Any]], None]) -> None:
         """Add a callback to be called when task completes."""
         self._callbacks.append(callback)
         if self._task:
             self._task.add_done_callback(callback)
 
-    def remove_done_callback(self, callback: Callable[[asyncio.Task], None]) -> int:
+    def remove_done_callback(self, callback: Callable[[asyncio.Task[Any]], None]) -> int:
         """Remove a done callback."""
         if self._task:
             return self._task.remove_done_callback(callback)
@@ -152,7 +152,12 @@ class Task(Generic[T]):
         self.create()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> None:
         if self._task and not self._task.done():
             await self._task
 
@@ -184,9 +189,9 @@ class TaskGroup:
         self._name = name or "TaskGroup"
         self._loop = loop or asyncio.get_running_loop()
         self._cancel_on_error = cancel_on_error
-        self._tasks: set[asyncio.Task] = set()
-        self._completed: list[asyncio.Task] = []
-        self._failed: list[asyncio.Task] = []
+        self._tasks: set[asyncio.Task[Any]] = set()
+        self._completed: list[asyncio.Task[Any]] = []
+        self._failed: list[asyncio.Task[Any]] = []
         self._entered = False
         self._exiting = False
 
@@ -195,15 +200,15 @@ class TaskGroup:
         return self._name
 
     @property
-    def tasks(self) -> set[asyncio.Task]:
+    def tasks(self) -> set[asyncio.Task[Any]]:
         return self._tasks
 
     @property
-    def completed_tasks(self) -> list[asyncio.Task]:
+    def completed_tasks(self) -> list[asyncio.Task[Any]]:
         return self._completed
 
     @property
-    def failed_tasks(self) -> list[asyncio.Task]:
+    def failed_tasks(self) -> list[asyncio.Task[Any]]:
         return self._failed
 
     def create_task(
@@ -215,7 +220,7 @@ class TaskGroup:
         task.add_done_callback(self._task_done)
         return task
 
-    def _task_done(self, task: asyncio.Task) -> None:
+    def _task_done(self, task: asyncio.Task[Any]) -> None:
         """Callback when a task completes."""
         self._tasks.discard(task)
         if task.cancelled():
@@ -246,7 +251,12 @@ class TaskGroup:
         self._entered = True
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> bool:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> bool:
         self._exiting = True
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -271,7 +281,8 @@ async def gather(
 ) -> list[T | BaseException]:
     """Enhanced gather with concurrency limit."""
     if max_concurrent is None:
-        return await asyncio.gather(*coros, return_exceptions=return_exceptions)
+        results = await asyncio.gather(*coros, return_exceptions=return_exceptions)
+        return list(results)
 
     semaphore = asyncio.Semaphore(max_concurrent)
 
@@ -284,7 +295,10 @@ async def gather(
                     return e
                 raise
 
-    return await asyncio.gather(*[limited(c) for c in coros], return_exceptions=return_exceptions)
+    limited_results = await asyncio.gather(
+        *[limited(c) for c in coros], return_exceptions=return_exceptions
+    )
+    return list(limited_results)
 
 
 async def wait(
@@ -292,7 +306,7 @@ async def wait(
     *,
     timeout: float | None = None,
     return_when: str = asyncio.ALL_COMPLETED,
-) -> tuple[set[asyncio.Task], set[asyncio.Task]]:
+) -> tuple[set[asyncio.Task[Any]], set[asyncio.Task[Any]]]:
     """Wait for futures with enhanced options."""
     tasks = [asyncio.ensure_future(f) for f in futures]
     done, pending = await asyncio.wait(tasks, timeout=timeout, return_when=return_when)
@@ -404,6 +418,7 @@ async def demonstrate_tasks() -> None:
 
 async def create_task_example() -> None:
     """Basic task creation and execution."""
+
     async def worker(name: str, delay: float) -> str:
         await asyncio.sleep(delay)
         return f"{name} done"
@@ -420,6 +435,7 @@ async def create_task_example() -> None:
 
 async def task_with_name() -> None:
     """Tasks can have names for debugging."""
+
     async def named_worker() -> str:
         await asyncio.sleep(0.01)
         current = asyncio.current_task()
@@ -433,6 +449,7 @@ async def task_with_name() -> None:
 
 async def task_cancellation() -> None:
     """Demonstrates task cancellation."""
+
     async def long_running() -> str:
         try:
             for i in range(10):
@@ -455,6 +472,7 @@ async def task_cancellation() -> None:
 
 async def task_exception_handling() -> None:
     """Handling exceptions in tasks."""
+
     async def failing_task() -> str:
         await asyncio.sleep(0.01)
         raise RuntimeError("Task failed!")
@@ -483,6 +501,7 @@ async def task_exception_handling() -> None:
 
 async def task_result_handling() -> None:
     """Various ways to get task results."""
+
     async def compute(value: int) -> int:
         await asyncio.sleep(0.01)
         return value * 2
@@ -499,9 +518,9 @@ async def task_result_handling() -> None:
     print(f"task.result(): {task2.result()}")
 
     # Method 3: add_done_callback
-    results = []
+    results: list[Any] = []
 
-    def callback(t: asyncio.Task) -> None:
+    def callback(t: asyncio.Task[Any]) -> None:
         results.append(t.result())
 
     task3 = asyncio.create_task(compute(5))
@@ -512,7 +531,8 @@ async def task_result_handling() -> None:
 
 async def gather_example() -> None:
     """asyncio.gather - run multiple awaitables concurrently."""
-    async def fetch(id: int) -> dict:
+
+    async def fetch(id: int) -> dict[str, Any]:
         await asyncio.sleep(0.01 * id)
         return {"id": id, "data": f"item-{id}"}
 
@@ -527,12 +547,15 @@ async def gather_example() -> None:
         await asyncio.sleep(0.01)
         return f"ok-{id}"
 
-    results = await asyncio.gather(*[maybe_fail(i) for i in range(5)], return_exceptions=True)
-    print(f"With exceptions: {results}")
+    results_with_exceptions = await asyncio.gather(
+        *[maybe_fail(i) for i in range(5)], return_exceptions=True
+    )
+    print(f"With exceptions: {results_with_exceptions}")
 
 
 async def wait_example() -> None:
     """asyncio.wait - more control over waiting."""
+
     async def worker(id: int, delay: float) -> str:
         await asyncio.sleep(delay)
         return f"worker-{id}"
@@ -554,6 +577,7 @@ async def wait_example() -> None:
 
 async def as_completed_example() -> None:
     """asyncio.as_completed - iterate as tasks complete."""
+
     async def fetch(id: int) -> str:
         await asyncio.sleep(0.1 * (5 - id))  # Reverse order completion
         return f"result-{id}"
@@ -561,7 +585,7 @@ async def as_completed_example() -> None:
     tasks = [fetch(i) for i in range(5)]
 
     print("Results as completed:")
-    async for coro in asyncio.as_completed(tasks):
+    for coro in asyncio.as_completed(tasks):
         result = await coro
         print(f"  {result}")
 
@@ -578,9 +602,11 @@ class TaskPool:
         self._max_workers = max_workers
         self._loop = loop or asyncio.get_running_loop()
         self._semaphore = asyncio.Semaphore(max_workers)
-        self._active_tasks: set[asyncio.Task] = set()
-        self._queue: asyncio.Queue = asyncio.Queue()
-        self._workers: list[asyncio.Task] = []
+        self._active_tasks: set[asyncio.Task[Any]] = set()
+        self._queue: asyncio.Queue[
+            tuple[Coroutine[Any, Any, Any] | None, asyncio.Future[Any] | None]
+        ] = asyncio.Queue()
+        self._workers: list[asyncio.Task[Any]] = []
         self._closed = False
 
     async def start(self) -> None:
@@ -598,14 +624,14 @@ class TaskPool:
                 async with self._semaphore:
                     try:
                         result = await coro
-                        if not future.done():
+                        if future is not None and not future.done():
                             future.set_result(result)
                     except asyncio.CancelledError:
-                        if not future.done():
+                        if future is not None and not future.done():
                             future.cancel()
                         raise
                     except BaseException as e:
-                        if not future.done():
+                        if future is not None and not future.done():
                             future.set_exception(e)
             except asyncio.CancelledError:
                 break
@@ -616,7 +642,7 @@ class TaskPool:
         """Submit a coroutine to the pool."""
         if self._closed:
             raise RuntimeError("Task pool is closed")
-        future = self._loop.create_future()
+        future: asyncio.Future[T] = self._loop.create_future()
         await self._queue.put((coro, future))
         return await future
 
@@ -631,12 +657,19 @@ class TaskPool:
         await self.start()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> None:
         await self.close()
 
 
 @asynccontextmanager
-async def task_scope(*, name: str | None = None, cancel_on_error: bool = True):
+async def task_scope(
+    *, name: str | None = None, cancel_on_error: bool = True
+) -> AsyncIterator[TaskGroup]:
     """Context manager for structured task scope."""
     group = create_task_group(name=name, cancel_on_error=cancel_on_error)
     try:
@@ -657,7 +690,7 @@ async def run_periodic(
     *,
     name: str | None = None,
     loop: asyncio.AbstractEventLoop | None = None,
-) -> asyncio.Task:
+) -> asyncio.Task[Any]:
     """Run a coroutine periodically."""
     loop = loop or asyncio.get_running_loop()
 
@@ -678,10 +711,12 @@ class TaskManager:
     """Manage background tasks with lifecycle control."""
 
     def __init__(self) -> None:
-        self._tasks: dict[str, asyncio.Task] = {}
+        self._tasks: dict[str, asyncio.Task[Any]] = {}
         self._lock = asyncio.Lock()
 
-    def create_task(self, coro: Coroutine[Any, Any, Any], *, name: str | None = None) -> asyncio.Task:
+    def create_task(
+        self, coro: Coroutine[Any, Any, Any], *, name: str | None = None
+    ) -> asyncio.Task[Any]:
         """Create and start a background task."""
         task = asyncio.create_task(coro, name=name)
         key = name or str(id(task))
@@ -689,7 +724,7 @@ class TaskManager:
         task.add_done_callback(lambda _task: self._tasks.pop(key, None))
         return task
 
-    async def start(self, name: str, coro: Coroutine[Any, Any, Any]) -> asyncio.Task:
+    async def start(self, name: str, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
         """Start a named background task."""
         async with self._lock:
             if name in self._tasks:
@@ -736,7 +771,7 @@ class TaskManager:
                 results.append(e)
         return results
 
-    def get_task(self, name: str) -> asyncio.Task | None:
+    def get_task(self, name: str) -> asyncio.Task[Any] | None:
         """Get a background task by name."""
         return self._tasks.get(name)
 

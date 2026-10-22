@@ -256,12 +256,12 @@ async def demonstrate_coroutines() -> None:
     print(f"Result: {result}")
 
     # 3. Coroutine with arguments
-    result = await coroutine_with_args("World", 0.01)
-    print(f"With args: {result}")
+    result_with_args = await coroutine_with_args("World", 0.01)
+    print(f"With args: {result_with_args}")
 
     # 4. Coroutine returning complex value
-    result = await coroutine_returning_value()
-    print(f"Complex return: {result}")
+    complex_result = await coroutine_returning_value()
+    print(f"Complex return: {complex_result}")
 
     # 5. Exception handling in coroutines
     # Catching a coroutine exception works just like sync code.
@@ -273,15 +273,15 @@ async def demonstrate_coroutines() -> None:
     # 6. Class-based coroutines
     example = CoroutineExample("test")
     # Awaiting a coroutine method is the same as awaiting a function.
-    result = await example.method_coroutine(21)
-    print(f"Method coroutine: {result}")
+    method_result = await example.method_coroutine(21)
+    print(f"Method coroutine: {method_result}")
 
-    result = await CoroutineExample.static_coroutine(10, 20)
-    print(f"Static coroutine: {result}")
+    static_result = await CoroutineExample.static_coroutine(10, 20)
+    print(f"Static coroutine: {static_result}")
 
-    result = await example  # Uses __await__
+    awaitable_result = await example  # Uses __await__
     # await example makes an instance awaitable.
-    print(f"Awaitable instance: {result}")
+    print(f"Awaitable instance: {awaitable_result}")
 
     # 7. Async generators
     # async for consumes an async generator. Each iteration yields the next value.
@@ -292,8 +292,8 @@ async def demonstrate_coroutines() -> None:
     # 8. Async iterators
     # Iterating over an async iterator. Behind the scenes each __anext__ is awaited.
     print("\n--- Async Iterator ---")
-    async for value in coroutine_with_yield_from():
-        print(f"Iterated: {value}")
+    async for iterated in coroutine_with_yield_from():
+        print(f"Iterated: {iterated}")
 
     # 9. Sequential vs concurrent
     print("\n--- Sequential Execution ---")
@@ -314,9 +314,10 @@ async def demonstrate_coroutines() -> None:
     # 10. Coroutine inspection
     print("\n--- Coroutine Inspection ---")
     coro = coroutine_with_args("inspect")
-    print(f"Coroutine name: {coro.cr_code.co_name}")
-    print(f"Coroutine file: {coro.cr_code.co_filename}")
-    print(f"Coroutine line: {coro.cr_code.co_firstlineno}")
+    coro_code = coro.cr_code  # type: ignore[attr-defined]
+    print(f"Coroutine name: {coro_code.co_name}")
+    print(f"Coroutine file: {coro_code.co_filename}")
+    print(f"Coroutine line: {coro_code.co_firstlineno}")
     # Clean up unstarted coroutine
     coro.close()
 
