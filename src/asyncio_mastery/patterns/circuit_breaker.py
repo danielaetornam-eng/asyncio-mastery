@@ -268,7 +268,11 @@ class CircuitBreaker:
         if self._stats.state == CircuitState.OPEN:
             # State transition: OPEN -> HALF_OPEN once the cooldown has
             # elapsed since the last failure.
-            if time.monotonic() - self._stats.last_failure_time >= self._config.timeout:
+            last_failure = self._stats.last_failure_time
+            if (
+                last_failure is not None
+                and time.monotonic() - last_failure >= self._config.timeout
+            ):
                 await self._transition_to(CircuitState.HALF_OPEN)
                 return True
             return False
@@ -284,7 +288,10 @@ class CircuitBreaker:
             float: Remaining seconds of cooldown (0 if not OPEN).
         """
         if self._stats.state == CircuitState.OPEN:
-            elapsed = time.monotonic() - self._stats.last_failure_time
+            last_failure = self._stats.last_failure_time
+            if last_failure is None:
+                return self._config.timeout
+            elapsed = time.monotonic() - last_failure
             return max(0, self._config.timeout - elapsed)
         return 0
 

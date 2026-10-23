@@ -54,7 +54,7 @@ Minimal example
 import asyncio
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
@@ -213,7 +213,10 @@ class PubSub:
         Returns:
             int: Total handler deliveries across all messages.
         """
-        return sum(await self.publish(m.topic, m.payload, **m.headers) for m in messages)
+        total: int = 0
+        for m in messages:
+            total += await self.publish(m.topic, m.payload, **m.headers)
+        return total
 
     def get_history(self, topic: str | None = None, limit: int = 100) -> list[Message[Any]]:
         """Get message history.
@@ -290,7 +293,7 @@ class Topic:
 @asynccontextmanager
 async def subscription(
     pubsub: PubSub, topic: str, handler: Callable[[Message[Any]], Awaitable[None]]
-):
+) -> AsyncIterator[None]:
     """Context manager for subscription.
 
     Guarantees unsubscription on exit — no lingering handlers even if
@@ -351,7 +354,10 @@ async def demonstrate_pubsub() -> None:
     events_topic = Topic(pubsub, "typed_events")
     received2: list[str] = []
 
-    await events_topic.subscribe(lambda m: received2.append(m.payload))
+    async def typed_handler(message: Message[str]) -> None:
+        received2.append(message.payload)
+
+    await events_topic.subscribe(typed_handler)
     await events_topic.publish("typed message 1")
     await events_topic.publish("typed message 2")
 

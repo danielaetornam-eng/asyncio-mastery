@@ -53,8 +53,8 @@ import asyncio
 import functools
 import random
 import time
-from collections.abc import Awaitable, Callable, Hashable
-from typing import ParamSpec, TypeVar
+from collections.abc import Awaitable, Callable, Coroutine, Hashable
+from typing import Any, ParamSpec, TypeVar, cast
 
 P = ParamSpec("P")
 T = TypeVar("T")
@@ -218,7 +218,7 @@ def async_cached(
         # Maps argument-key -> (timestamp, result).
         cache: dict[Hashable, tuple[float, T]] = {}
 
-        def make_key(args: tuple, kwargs: dict) -> Hashable:
+        def make_key(args: tuple[object, ...], kwargs: dict[str, object]) -> Hashable:
             # Sorting kwargs makes f(a=1, b=2) and f(b=2, a=1) share a key.
             return (args, tuple(sorted(kwargs.items())))
 
@@ -251,8 +251,9 @@ def async_cached(
             """Return current and maximum cache sizes."""
             return {"size": len(cache), "maxsize": maxsize}
 
-        wrapper.cache_clear = cache_clear
-        wrapper.cache_info = cache_info
+        wrapper_any = cast("Any", wrapper)
+        wrapper_any.cache_clear = cache_clear
+        wrapper_any.cache_info = cache_info
         return wrapper
 
     return decorator
@@ -287,10 +288,11 @@ def async_singleton(func: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T]
         # The lock makes the check-and-run atomic across concurrent tasks.
         async with lock:
             if completed:
-                return result
-            result = await func(*args, **kwargs)
+                return cast("T", result)
+            value = await func(*args, **kwargs)
+            result = value
             completed = True
-            return result
+            return value
 
     return wrapper
 
@@ -322,20 +324,25 @@ def debounce(
 
     def decorator(func: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T | None]]:
         timer: asyncio.TimerHandle | None = None
-        pending_args: tuple[tuple, dict] | None = None
-        pending_task: asyncio.Task | None = None
+        pending_args: tuple[tuple[object, ...], dict[str, object]] | None = None
+        pending_task: asyncio.Task[Any] | None = None
 
         @functools.wraps(func)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T | None:
             nonlocal timer, pending_args, pending_task
             # Always overwrite: only the LATEST call's arguments are used.
-            pending_args = (args, kwargs)
+            pending_args = (cast("tuple[object, ...]", args), cast("dict[str, object]", kwargs))
 
             def execute() -> None:
                 nonlocal pending_args, pending_task
                 if pending_args:
                     args_, kwargs_ = pending_args
-                    pending_task = asyncio.create_task(func(*args_, **kwargs_))
+                    pending_task = asyncio.create_task(
+                        cast(
+                            "Coroutine[Any, Any, T]",
+                            func(*cast("Any", args_), **cast("Any", kwargs_)),
+                        )
+                    )
                     pending_args = None
 
             if timer:
@@ -350,7 +357,8 @@ def debounce(
             if pending_task:
                 pending_task.cancel()
 
-        wrapper.cancel = cancel
+        wrapper_any = cast("Any", wrapper)
+        wrapper_any.cancel = cancel
         return wrapper
 
     return decorator
@@ -426,7 +434,7 @@ def background_task(
         @functools.wraps(func)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> asyncio.Task[T]:
             # NOTE: not `async def` on purpose -- create_task itself is sync.
-            return asyncio.create_task(func(*args, **kwargs), name=name or func.__name__)
+            return asyncio.create_task(cast("Coroutine[Any, Any, T]", func(*args, **kwargs)), name=name or func.__name__)
 
         return wrapper
 

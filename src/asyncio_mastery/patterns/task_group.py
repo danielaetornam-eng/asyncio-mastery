@@ -49,7 +49,7 @@ Minimal example
 """
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
@@ -120,14 +120,14 @@ class TaskGroup:
                 names. Defaults to "task-group".
         """
         self._name = name or "task-group"
-        self._tasks: set[asyncio.Task] = set()
+        self._tasks: set[asyncio.Task[Any]] = set()
         self._results: list[Any] = []
         self._exceptions: list[BaseException] = []
         self._cancelled = False
         self._entered = False
 
     def create_task(
-        self, coro: asyncio.coroutines.Coroutine[Any, Any, T], *, name: str | None = None
+        self, coro: Coroutine[Any, Any, T], *, name: str | None = None
     ) -> asyncio.Task[T]:
         """Schedule a coroutine as a task owned by this group.
 
@@ -159,7 +159,7 @@ class TaskGroup:
         task.add_done_callback(self._on_task_done)
         return task
 
-    def _on_task_done(self, task: asyncio.Task) -> None:
+    def _on_task_done(self, task: asyncio.Task[Any]) -> None:
         """Internal callback: capture a finished task's outcome.
 
         Calling ``task.result()`` re-raises the task's exception, so the
@@ -232,7 +232,7 @@ class TaskGroup:
         )
 
     @property
-    def tasks(self) -> set[asyncio.Task]:
+    def tasks(self) -> set[asyncio.Task[Any]]:
         """A copy of the still-pending tasks in the group.
 
         Returns:
@@ -323,8 +323,8 @@ async def demonstrate_task_group() -> None:
     group = TaskGroup(name="manual")
 
     async with group:
-        _task1 = group.create_task(asyncio.sleep(0.1, result="task1"))
-        _task2 = group.create_task(asyncio.sleep(0.05, result="task2"))
+        _task1: asyncio.Task[str] = group.create_task(asyncio.sleep(0.1, result="task1"))
+        _task2: asyncio.Task[str] = group.create_task(asyncio.sleep(0.05, result="task2"))
 
         # Can access tasks before completion
         print(f"Pending tasks: {len(group.tasks)}")

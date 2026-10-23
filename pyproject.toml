@@ -138,6 +138,17 @@ pretty = true
 module = "asyncio_mastery.integrations.database"
 disable_error_code = ["import-untyped"]
 
+# timeouts.py intentionally redefines Timeout / timeout_after / run_with_timeout /
+# TimeoutManager / demonstrate_timeouts at module level to teach Python's
+# name-shadowing semantics (see the "SECOND DEFINITION BLOCK" note inside that
+# file). mypy binds names to the FIRST definition, so the later block's sync
+# protocol call sites (__enter__/__exit__) are flagged. These errors are the
+# anticipated consequence of the deliberate redefinition, so we suppress them
+# for this single teaching module.
+[[tool.mypy.overrides]]
+module = "asyncio_mastery.advanced.timeouts"
+disable_error_code = ["no-redef", "attr-defined"]
+
 [tool.coverage.run]
 source = ["src/asyncio_mastery"]
 branch = true

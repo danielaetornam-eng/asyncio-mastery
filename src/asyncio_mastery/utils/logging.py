@@ -63,7 +63,7 @@ import logging
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any
@@ -215,6 +215,7 @@ class AsyncLogger:
                 fetched (or created) via ``logging.getLogger(name)``.
         """
         self._logger = logger or logging.getLogger(name)
+        self._loop: asyncio.AbstractEventLoop | None
         try:
             # Remember the running loop now so alog() can hand work to it
             # later. Raises RuntimeError if no loop exists in this thread yet
@@ -224,7 +225,7 @@ class AsyncLogger:
         except RuntimeError:
             self._loop = None
 
-    def _log(self, level: int, msg: str, *args: object, **kwargs: object) -> None:
+    def _log(self, level: int, msg: str, *args: object, **kwargs: Any) -> None:
         """Shared guts of every level method: attach context, then emit.
 
         Args:
@@ -234,8 +235,8 @@ class AsyncLogger:
             **kwargs: Forwarded to ``Logger.log``; ``extra={...}`` adds
                 custom fields to the record (picked up by StructuredFormatter).
         """
-        extra = kwargs.pop("extra", {})
-        # Contextvars lookup: from_context() reads THIS task's copy of the
+        extra_any = kwargs.pop("extra", {})
+        extra: dict[str, object] = dict(extra_any) if isinstance(extra_any, dict) else {}        # Contextvars lookup: from_context() reads THIS task's copy of the
         # request/user/trace ids, so interleaved tasks can never mix them up.
         context = LogContext.from_context().to_dict()
         if context:
@@ -355,7 +356,10 @@ class AsyncLogger:
         # Executor offload: run_in_executor schedules the lambda on a
         # thread-pool thread and returns a Future we await. The lambda
         # wrapper defers the actual _log call until the thread runs it.
-        await self._loop.run_in_executor(None, lambda: self._log(level, msg, *args, **kwargs))
+        if self._loop is not None:
+            await self._loop.run_in_executor(None, lambda: self._log(level, msg, *args, **kwargs))
+        else:
+            self._log(level, msg, *args, **kwargs)
 
     def with_context(self, **_context: object) -> "AsyncLogger":
         """Return a sibling AsyncLogger sharing the same underlying logger.
@@ -555,14 +559,16 @@ async def log_context(**context: object) -> AsyncIterator[None]:
         >>> async with log_context(request_id="req-42", user_id="u-7"):
         ...     log.info("handling request")  # ids attached automatically
     """
-    tokens: list[ContextVar[object]] = []
+    tokens: list[Token[str | None]] = []
     for var, value in context.items():
+        # ContextVar values are str | None; coerce anything else to str.
+        coerced: str | None = None if value is None else str(value)
         if var == "request_id":
-            tokens.append(request_id_var.set(value))
+            tokens.append(request_id_var.set(coerced))
         elif var == "user_id":
-            tokens.append(user_id_var.set(value))
+            tokens.append(user_id_var.set(coerced))
         elif var == "trace_id":
-            tokens.append(trace_id_var.set(value))
+            tokens.append(trace_id_var.set(coerced))
 
     try:
         yield

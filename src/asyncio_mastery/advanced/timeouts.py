@@ -1,4 +1,4 @@
-"""
+﻿"""
 Timeouts - Control execution time of async operations.
 
 ================================================================================
@@ -79,10 +79,10 @@ COMMON PATTERNS
 
 import asyncio
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 T = TypeVar("T")
 
@@ -189,7 +189,7 @@ class Timeout:
     async def __aexit__(self, *args: Any) -> bool | None:
         """Exit the timeout context (stops the timer)."""
         if self._cm:
-            return await self._cm.__aexit__(*args)
+            return cast("bool | None", await self._cm.__aexit__(*args))
         return None
 
     @property
@@ -254,7 +254,7 @@ async def timeout_after(seconds: float | None) -> AsyncIterator[None]:
 
 
 async def run_with_timeout(
-    coro: asyncio.coroutines.Coroutine[Any, Any, T],
+    coro: Coroutine[Any, Any, T],
     timeout: float | None,
     *,
     default: T | None = None,
@@ -475,8 +475,8 @@ async def demonstrate_timeouts() -> None:
         # The timeout applies to the shield() call, not the inner operation
         async with asyncio.timeout(0.1):
             # shield() protects the operation from being cancelled
-            result = await asyncio.shield(critical_operation())
-            print(f"Shielded result: {result}")
+            shielded = await asyncio.shield(critical_operation())
+            print(f"Shielded result: {shielded}")
     except TimeoutError:
         # The timeout fired, but critical_operation() continues in background!
         print("Timeout fired, but shielded operation continues in background...")
@@ -624,7 +624,8 @@ class Timeout:
         # NOW", and "now" only makes sense once we start.
         self._seconds = seconds
         self._deadline: float | None = None
-        # Will hold the real asyncio.timeout context manager instance.
+        # Holds the running-loop TimerHandle scheduled to cancel the current
+        # task when the deadline elapses (None when the timer is disabled).
         self._cm: Any = None
 
     def __enter__(self) -> "Timeout":
@@ -639,23 +640,37 @@ class Timeout:
             # monotonic() is the right clock for durations: it never jumps
             # backwards due to NTP adjustments or daylight saving.
             self._deadline = time.monotonic() + self._seconds
-            # Delegate the real timeout machinery to asyncio.timeout (3.11+).
-            self._cm = asyncio.timeout(self._seconds)
-            self._cm.__enter__()
+            # The real machinery: schedule a cancellation of the CURRENT task
+            # for the deadline. Unlike asyncio.timeout() (async-only), this
+            # synchronous block must arm the timer itself.
+            task = asyncio.current_task()
+            if task is not None:
+                self._cm = asyncio.get_running_loop().call_at(
+                    self._deadline, task.cancel
+                )
         return self
 
     def __exit__(self, *args: Any) -> bool | None:
         """
-        Exit the context — stops the timer / forwards the exit to asyncio.
+        Exit the context — stops the timer.
 
-        If the timeout fired inside the block, ``asyncio.timeout``'s exit
-        converts the internal cancellation into a ``TimeoutError`` here.
-        Returns whatever the inner context manager returns (its exit value
-        decides whether an exception gets suppressed — normally it doesn't).
+        If the block was cancelled because our timer fired, the internal
+        ``CancelledError`` is converted into the user-facing ``TimeoutError``
+        (the same behaviour ``asyncio.timeout`` provides for ``async with``).
         """
-        if self._cm:
-            # Pass through exc_type/exc_value/traceback unchanged.
-            return self._cm.__exit__(*args)
+        if self._cm is not None:
+            self._cm.cancel()
+            self._cm = None
+        exc_type, exc_val, _tb = args
+        if (
+            exc_type is not None
+            and self._deadline is not None
+            and issubclass(exc_type, asyncio.CancelledError)
+            and time.monotonic() >= self._deadline
+        ):
+            raise TimeoutError(
+                f"Operation timed out after {self._seconds}s"
+            ) from exc_val
         return None
 
     @property
@@ -728,7 +743,7 @@ async def timeout_after(seconds: float | None) -> AsyncIterator[None]:
 
 
 async def run_with_timeout(
-    coro: asyncio.coroutines.Coroutine[Any, Any, T],
+    coro: Coroutine[Any, Any, T],
     timeout: float | None,
     *,
     default: T | None = None,
@@ -881,91 +896,6 @@ class TimeoutManager:
             return True
         return False
 
-    def __init__(self, seconds: float | None) -> None:
-        self._seconds = seconds
-        self._deadline: float | None = None
-        self._cm: Any = None
-
-    def __enter__(self) -> "Timeout":
-        if self._seconds is not None:
-            self._deadline = time.monotonic() + self._seconds
-            self._cm = asyncio.timeout(self._seconds)
-            self._cm.__enter__()
-        return self
-
-    def __exit__(self, *args: Any) -> bool | None:
-        if self._cm:
-            return self._cm.__exit__(*args)
-        return None
-
-    @property
-    def expired(self) -> bool:
-        if self._deadline is None:
-            return False
-        return time.monotonic() >= self._deadline
-
-    @property
-    def remaining(self) -> float | None:
-        if self._deadline is None:
-            return None
-        return max(0, self._deadline - time.monotonic())
-
-
-@asynccontextmanager
-async def timeout_after(seconds: float | None) -> AsyncIterator[None]:
-    """Context manager for timeout (alias for asyncio.timeout)."""
-    if seconds is None:
-        yield
-    else:
-        async with asyncio.timeout(seconds):
-            yield
-
-
-async def run_with_timeout(
-    coro: asyncio.coroutines.Coroutine[Any, Any, T],
-    timeout: float | None,
-    *,
-    default: T | None = None,
-) -> TimeoutResult:
-    """Run coroutine with timeout, returning result object."""
-    start = time.monotonic()
-    try:
-        async with timeout_after(timeout):
-            value = await coro
-        return TimeoutResult(success=True, value=value, duration=time.monotonic() - start)
-    except TimeoutError as e:
-        return TimeoutResult(
-            success=False, value=default, error=e, duration=time.monotonic() - start, timed_out=True
-        )
-    except Exception as e:
-        return TimeoutResult(success=False, error=e, duration=time.monotonic() - start)
-
-
-class TimeoutManager:
-    """Manage multiple timeouts."""
-
-    def __init__(self) -> None:
-        self._timeouts: dict[str, Timeout] = {}
-
-    def create(self, name: str, seconds: float | None) -> Timeout:
-        """Create named timeout."""
-        timeout = Timeout(seconds)
-        self._timeouts[name] = timeout
-        return timeout
-
-    def get(self, name: str) -> Timeout | None:
-        return self._timeouts.get(name)
-
-    def cancel(self, name: str) -> bool:
-        """Cancel timeout by entering and exiting immediately."""
-        if name in self._timeouts:
-            timeout = self._timeouts[name]
-            timeout.__enter__()
-            timeout.__exit__(None, None, None)
-            del self._timeouts[name]
-            return True
-        return False
-
 
 async def demonstrate_timeouts() -> None:
     """
@@ -1038,7 +968,10 @@ async def demonstrate_timeouts() -> None:
     manager = TimeoutManager()
 
     async def worker(id: int, timeout: float) -> str:
-        async with manager.create(f"worker-{id}", timeout):
+        # NOTE: the ACTIVE Timeout class (defined in the "SECOND DEFINITION
+        # BLOCK") uses the SYNCHRONOUS context manager protocol, so we use
+        # a plain `with` here - not `async with`.
+        with manager.create(f"worker-{id}", timeout):
             await asyncio.sleep(timeout * 2)
             return f"worker-{id} done"
 
@@ -1058,8 +991,8 @@ async def demonstrate_timeouts() -> None:
 
     try:
         async with asyncio.timeout(0.1):
-            result = await asyncio.shield(critical_operation())
-            print(f"Shielded result: {result}")
+            shielded = await asyncio.shield(critical_operation())
+            print(f"Shielded result: {shielded}")
     except TimeoutError:
         print("Timeout but shielded operation continues in background")
 

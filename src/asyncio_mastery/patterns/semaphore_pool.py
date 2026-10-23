@@ -49,6 +49,7 @@ Minimal example
 
 import asyncio
 from collections import defaultdict
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -139,7 +140,7 @@ class SemaphorePool:
         return False
 
     @asynccontextmanager
-    async def acquire(self, name: str, value: int = 1):
+    async def acquire(self, name: str, value: int = 1) -> AsyncIterator[AsyncSemaphore]:
         """Acquire the named semaphore for the duration of a block.
 
         Guarantees ``release`` runs even if the body raises — writing

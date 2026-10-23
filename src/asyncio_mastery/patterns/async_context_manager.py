@@ -58,7 +58,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Generic, TypeVar
+from typing import Generic, TypeVar, cast
 
 T = TypeVar("T")
 
@@ -260,7 +260,7 @@ class AsyncResourceManager(Generic[T]):
 
     def __init__(self) -> None:
         """Create an empty manager; register resources with :meth:`add`."""
-        self._resources: dict[str, AsyncContextManager[object]] = {}
+        self._resources: dict[str, AsyncContextManager[T]] = {}
         self._lock = asyncio.Lock()
 
     def add(self, name: str, manager: AsyncContextManager[T]) -> None:
@@ -287,7 +287,7 @@ class AsyncResourceManager(Generic[T]):
             A dict mapping each name to its initialized resource (the
             same value its manager's ``__aenter__`` returned).
         """
-        results = {}
+        results: dict[str, T] = {}
         for name, manager in self._resources.items():
             results[name] = await manager.__aenter__()
         return results
@@ -421,7 +421,7 @@ class AsyncLazyResource(Generic[T]):
             if not self._initialized:
                 self._resource = await self._factory()
                 self._initialized = True
-            return self._resource
+            return cast("T", self._resource)
 
     async def close(self) -> None:
         """Release the resource if it was ever initialized.
@@ -477,7 +477,7 @@ async def demonstrate_async_context_manager() -> None:
 
     # Resource manager
     print("\n--- Resource Manager ---")
-    manager = AsyncResourceManager()
+    manager: AsyncResourceManager[str] = AsyncResourceManager()
 
     class CacheConnection(AsyncContextManager[str]):
         async def _initialize(self) -> str:
@@ -514,7 +514,12 @@ async def demonstrate_async_context_manager() -> None:
 
     # Lazy resource
     print("\n--- Lazy Resource ---")
-    lazy = AsyncLazyResource(lambda: asyncio.sleep(0.01) or "lazy-value", name="lazy")
+
+    async def create_lazy_value() -> str:
+        await asyncio.sleep(0.01)
+        return "lazy-value"
+
+    lazy = AsyncLazyResource(create_lazy_value, name="lazy")
 
     # First access initializes
     val1 = await lazy.get()

@@ -72,14 +72,14 @@ class RateLimitConfig:
     burst: int | None = None  # max burst (for token bucket)
 
 
-class RateLimiter(ABC):
+class RateLimiterBase(ABC):
     """Abstract rate limiter.
 
     Defines the common vocabulary every limiter shares: ``acquire``
     (wait for permission), ``try_acquire`` (permission or nothing), and
     ``available`` (how much budget is left right now).
 
-    NOTE: A concrete convenience class also named :class:`RateLimiter`
+    NOTE: A concrete convenience class named :class:`RateLimiter`
     is defined later in this module — it composes one of the algorithmic
     limiters below and adds context-manager sugar.
     """
@@ -118,7 +118,7 @@ class RateLimiter(ABC):
         pass
 
 
-class TokenBucket(RateLimiter):
+class TokenBucket(RateLimiterBase):
     """Token bucket rate limiter.
 
     The bucket starts full and refills continuously at ``rate`` tokens
@@ -208,7 +208,7 @@ class TokenBucket(RateLimiter):
         return self._tokens
 
 
-class SlidingWindow(RateLimiter):
+class SlidingWindow(RateLimiterBase):
     """Sliding window rate limiter.
 
     Keeps a deque of the timestamps of the last requests. On each
@@ -335,6 +335,7 @@ class RateLimiter:
         """
         self._rate = rate
         self._burst = burst
+        self._limiter: RateLimiterBase
 
         if algorithm == "token_bucket":
             self._limiter = TokenBucket(rate, burst)

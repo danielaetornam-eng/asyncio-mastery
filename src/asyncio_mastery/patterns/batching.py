@@ -85,7 +85,7 @@ class BatchConfig:
 
 
 @dataclass
-class Batch(Generic[T]):
+class Batch(Generic[T, R]):
     """One queued batch of items plus each caller's result Future.
 
     Each item was added by a different coroutine that is *awaiting its
@@ -105,9 +105,9 @@ class Batch(Generic[T]):
 
     items: list[T] = field(default_factory=list)
     created_at: float = field(default_factory=time.monotonic)
-    futures: list[asyncio.Future] = field(default_factory=list)
+    futures: list[asyncio.Future[R]] = field(default_factory=list)
 
-    def add(self, item: T) -> asyncio.Future:
+    def add(self, item: T) -> asyncio.Future[R]:
         """Add item and return future for result.
 
         The caller keeps the Future; when the batch eventually flushes,
@@ -120,7 +120,7 @@ class Batch(Generic[T]):
             asyncio.Future: A Future that will resolve with this item's
             individual result once the batch is processed.
         """
-        future: asyncio.Future = asyncio.Future()
+        future: asyncio.Future[R] = asyncio.Future()
         self.items.append(item)
         self.futures.append(future)
         return future
@@ -199,12 +199,12 @@ class Batcher(Generic[T, R]):
         """
         self._processor = processor
         self._config = config or BatchConfig()
-        self._current_batch: Batch[T] | None = None
+        self._current_batch: Batch[T, R] | None = None
         # The lock makes "check batch, add item, maybe flush" atomic:
         # without it two concurrent add() calls could both decide the
         # batch isn't full, leading to oversized batches or lost flushes.
         self._lock = asyncio.Lock()
-        self._flush_task: asyncio.Task | None = None
+        self._flush_task: asyncio.Task[Any] | None = None
 
     async def add(self, item: T) -> R:
         """Add item and wait for batch result.
@@ -229,7 +229,7 @@ class Batcher(Generic[T, R]):
             if self._current_batch is None:
                 # First item of a new batch: open it and start the
                 # max_wait countdown timer.
-                self._current_batch = Batch()
+                self._current_batch = Batch[T, R]()
                 self._flush_task = asyncio.create_task(self._auto_flush())
 
             future = self._current_batch.add(item)
@@ -262,7 +262,7 @@ class Batcher(Generic[T, R]):
                 self._current_batch = None
                 asyncio.create_task(self._process_batch(batch))
 
-    async def _process_batch(self, batch: Batch[T]) -> None:
+    async def _process_batch(self, batch: Batch[T, R]) -> None:
         """Process a batch.
 
         Invokes the user-supplied bulk processor and fans the results

@@ -271,7 +271,7 @@ class ConnectionPool(Generic[T]):
         self._in_use: set[PooledConnection[T]] = set()
         self._lock = asyncio.Lock()
         self._stats = PoolStats()
-        self._health_check_task: asyncio.Task | None = None
+        self._health_check_task: asyncio.Task[Any] | None = None
         self._closed = False
 
     async def start(self) -> None:

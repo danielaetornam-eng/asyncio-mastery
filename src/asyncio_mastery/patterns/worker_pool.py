@@ -54,7 +54,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, cast
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -191,7 +191,7 @@ class WorkerPool(Generic[T, R]):
         self._max_queue_size = max_queue_size
         self._name = name
         self._queue: asyncio.Queue[Job[T, R]] = asyncio.Queue(maxsize=max_queue_size)
-        self._workers: list[asyncio.Task] = []
+        self._workers: list[asyncio.Task[Any]] = []
         self._running = False
         self._stats = {"submitted": 0, "completed": 0, "failed": 0, "cancelled": 0}
 
@@ -283,8 +283,16 @@ class WorkerPool(Generic[T, R]):
             out — check ``stats["failed"]`` for the failure count).
         """
         jobs = [await self.submit(item) for item in items]
-        results = await asyncio.gather(*[job.execute() for job in jobs], return_exceptions=True)
-        return [r for r in results if not isinstance(r, Exception)]
+        results: list[R | BaseException] = await asyncio.gather(
+            *[job.execute() for job in jobs], return_exceptions=True
+        )
+        # Keep only successful (non-exception) results, narrowing the element
+        # type back to R. Job.execute() either returns R or raises.
+        out: list[R] = []
+        for r in results:
+            if not isinstance(r, Exception):
+                out.append(cast("Any", r))
+        return out
 
     async def _worker_loop(self, worker_id: int) -> None:
         """Worker main loop.

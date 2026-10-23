@@ -52,11 +52,11 @@ Minimal example
 """
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import Enum
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 T = TypeVar("T")
 
@@ -135,8 +135,8 @@ class ProducerConsumer(Generic[T]):
         self._num_consumers = num_consumers
         self._name = name
         self._queue: asyncio.Queue[T] = asyncio.Queue(maxsize=max_queue_size)
-        self._consumer_tasks: list[asyncio.Task] = []
-        self._producer_tasks: list[asyncio.Task] = []
+        self._consumer_tasks: list[asyncio.Task[Any]] = []
+        self._producer_tasks: list[asyncio.Task[Any]] = []
         self._running = False
         # An Event acts like a broadcast flag: one set() wakes every task
         # waiting on it. Here it signals "shut down" to all consumers.
@@ -207,7 +207,7 @@ class ProducerConsumer(Generic[T]):
         self._stats.produced += 1
         self._stats.queue_size = self._queue.qsize()
 
-    async def produce_many(self, items: list[T]) -> None:
+    async def produce_many(self, items: Iterable[T]) -> None:
         """Produce multiple items.
 
         Args:

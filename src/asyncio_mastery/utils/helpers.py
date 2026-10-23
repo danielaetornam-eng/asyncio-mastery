@@ -63,9 +63,10 @@ MINIMAL EXAMPLE
 
 import asyncio
 import time
-from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterable, Awaitable, Callable, Coroutine
+from collections.abc import AsyncIterator as ABCAsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, cast
 
 T = TypeVar("T")
 U = TypeVar("U")
@@ -141,13 +142,15 @@ def run_async(coro: Awaitable[T]) -> T:
 
     if loop.is_running():
         # loop already owned by this thread/context: submit and block
-        return asyncio.run_coroutine_threadsafe(coro, loop).result()
+        return asyncio.run_coroutine_threadsafe(
+            cast("Coroutine[Any, Any, T]", coro), loop
+        ).result()
     else:
-        return loop.run_until_complete(coro)
+        return loop.run_until_complete(cast("Coroutine[Any, Any, T]", coro))
 
 
 @asynccontextmanager
-async def create_task_group() -> AsyncIterator["TaskGroup"]:
+async def create_task_group() -> ABCAsyncIterator["TaskGroup"]:
     """Shortcut: ``async with create_task_group() as g: g.create_task(...)``.
 
     Equivalent to ``async with TaskGroup() as g:`` — exists for symmetry
@@ -186,7 +189,7 @@ class TaskGroup:
 
     def __init__(self) -> None:
         """Create an empty group; tasks join via :meth:`create_task`."""
-        self._tasks: set[asyncio.Task] = set()
+        self._tasks: set[asyncio.Task[Any]] = set()
 
     def create_task(self, coro: Awaitable[T], *, name: str | None = None) -> asyncio.Task[T]:
         """Schedule a coroutine as a task tracked by this group.
@@ -201,7 +204,9 @@ class TaskGroup:
             registry automatically when it completes (via a done
             callback), so the set only ever holds LIVE tasks.
         """
-        task = asyncio.create_task(coro, name=name)
+        task: asyncio.Task[T] = asyncio.create_task(
+            cast("Coroutine[Any, Any, T]", coro), name=name
+        )
         self._tasks.add(task)
         # discard() will not raise if the task was already removed
         task.add_done_callback(self._tasks.discard)
@@ -246,7 +251,7 @@ class AsyncIterator(Generic[T]):
             iterable: The source, e.g. an async generator.
         """
         self._iterable = iterable
-        self._iterator: AsyncIterator[T] | None = None
+        self._iterator: ABCAsyncIterator[T] | None = None
 
     def __aiter__(self) -> "AsyncIterator[T]":
         """Prepare the underlying iterator (called by ``async for``).
@@ -274,7 +279,7 @@ class AsyncIterator(Generic[T]):
 
 async def async_map(
     func: Callable[[T], Awaitable[U]], iterable: AsyncIterable[T]
-) -> AsyncIterator[U]:
+) -> ABCAsyncIterator[U]:
     """Apply an async function to every item of an async source.
 
     The async version of Python's built-in ``map`` — but because each
@@ -299,7 +304,7 @@ async def async_map(
 
 async def async_filter(
     predicate: Callable[[T], Awaitable[bool]], iterable: AsyncIterable[T]
-) -> AsyncIterator[T]:
+) -> ABCAsyncIterator[T]:
     """Keep only items an async test says yes to.
 
     Like built-in ``filter``, but the test itself is a coroutine (e.g.
@@ -605,8 +610,9 @@ async def wait_for_first(*awaitables: Awaitable[T], timeout: float | None = None
     Example:
         >>> fastest = await wait_for_first(query_a(), query_b())
     """
+    tasks = [asyncio.ensure_future(a) for a in awaitables]
     done, pending = await asyncio.wait(
-        awaitables, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+        tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
     )
     if not done:
         raise TimeoutError("No awaitable completed in time")
@@ -631,7 +637,7 @@ if __name__ == "__main__":
         print(f"Concurrency limited: {results}")
 
         # AsyncCache
-        cache = AsyncCache(ttl=1.0)
+        cache: AsyncCache[int] = AsyncCache(ttl=1.0)
         call_count = 0
 
         async def expensive(x: int) -> int:

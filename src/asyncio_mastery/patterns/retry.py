@@ -341,12 +341,13 @@ class RetryPolicy:
 
         while True:
             try:
-                state.last_result = await func(*args, **kwargs)
+                last_result: T = await func(*args, **kwargs)
+                state.last_result = last_result
                 # A "successful" call can still merit a retry if the
                 # value signals incompleteness (ON_RESULT mode).
-                if self._should_retry_result(state.last_result):
+                if self._should_retry_result(last_result):
                     raise RetryableError("Result indicates retry needed")
-                return state.last_result
+                return last_result
             except self._config.stop_on:
                 raise
             except self._config.retry_on as e:
@@ -476,8 +477,8 @@ async def demonstrate_retry() -> None:
         condition=RetryCondition.CUSTOM,
         custom_condition=lambda r: not r,  # Retry while False
     )
-    result = await RetryPolicy(config).execute(returns_false_then_true)
-    print(f"Result: {result} (attempts: {attempt_count})")
+    bool_result = await RetryPolicy(config).execute(returns_false_then_true)
+    print(f"Result: {bool_result} (attempts: {attempt_count})")
 
     # Different backoff strategies
     print("\n--- Backoff Strategies ---")
